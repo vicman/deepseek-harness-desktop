@@ -1,0 +1,9 @@
+dsh-desktop (0.1.0) unstable; urgency=medium
+
+  * Versión inicial.
+  * Arranque automático del servidor local de DeepSeek Harness.
+  * Pantalla de carga propia con el logotipo oficial.
+  * Ventana nativa (Tauri) sin navegador.
+  * Autenticación resuelta mediante el flujo nativo de redirección.
+
+ -- Victor Manuel Agudelo <vicmandev@gmail.com>  Thu, 08 Oct 2026 11:00:00 +0000

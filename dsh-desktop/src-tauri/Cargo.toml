@@ -1,0 +1,23 @@
+[package]
+name = "dsh-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "DeepSeek Harness como aplicación de escritorio"
+authors = ["Victor Manuel Agudelo <vicmandev@gmail.com>"]
+license = "MIT"
+repository = "https://www.deepseek.com/harness/"
+# Necesario para que `cargo tauri build` sepa qué binario empaquetar.
+default-run = "dsh-desktop"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
