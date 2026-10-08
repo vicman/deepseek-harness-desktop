@@ -16,3 +16,6 @@ node_modules/
 .credentials.yaml
 .env
 *.key
+
+# Esquemas generados por tauri-build en cada compilación
+**/gen/schemas/

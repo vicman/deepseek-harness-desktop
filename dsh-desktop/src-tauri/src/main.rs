@@ -57,7 +57,23 @@ fn ruta_dsh() -> Option<String> {
             return Some(c.clone());
         }
     }
-    Some("dsh".to_string())
+
+    // Ultimo recurso: confiar en el PATH. Si tampoco aparece, devolvemos
+    // None para que quien llame sepa que no hay nada instalado (antes se
+    // devolvia "dsh" siempre, y eso impedia detectar la ausencia).
+    let salida = Command::new("sh")
+        .arg("-c")
+        .arg("command -v dsh")
+        .env("PATH", path_ampliado())
+        .output()
+        .ok()?;
+    if salida.status.success() {
+        let ruta = String::from_utf8_lossy(&salida.stdout).trim().to_string();
+        if !ruta.is_empty() {
+            return Some(ruta);
+        }
+    }
+    None
 }
 
 /// Localiza el directorio bin del Node más moderno instalado por nvm.
@@ -147,6 +163,171 @@ fn path_ampliado() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let node = dir_node().unwrap_or_default();
     format!("{node}:{home}/.local/share/pnpm/bin:{home}/.local/bin:{home}/.bun/bin:{actual}")
+}
+
+/// Idioma de la interfaz segun el equipo: `es`, `en` o `pt`.
+///
+/// Se leen las variables de entorno del sistema (las mismas que usa el
+/// escritorio). Espanol, ingles y portugues; cualquier otro idioma cae al
+/// espanol, que es el idioma por defecto de la aplicacion.
+fn idioma_del_equipo() -> &'static str {
+    // LC_ALL manda sobre LC_MESSAGES, y este sobre LANG.
+    for var in ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"] {
+        let valor = std::env::var(var).unwrap_or_default().to_lowercase();
+        if valor.is_empty() {
+            continue;
+        }
+        // Formatos: "es_CO.UTF-8", "en_US", "pt_BR.utf8", "es_CO:es"
+        let base = valor
+            .split(['.', ':', '@'])
+            .next()
+            .unwrap_or("")
+            .split(['_', '-'])
+            .next()
+            .unwrap_or("")
+            .to_string();
+        match base.as_str() {
+            "es" => return "es",
+            "en" => return "en",
+            "pt" => return "pt",
+            // Cualquier otro idioma: se sigue probando la variable siguiente.
+            _ => continue,
+        }
+    }
+    // Sin coincidencia, espanol por defecto.
+    "es"
+}
+
+/// Version de DSH que hay instalada, leida de su package.json.
+fn version_instalada(entrypoint: &str) -> Option<String> {
+    // <...>/node_modules/@deepseek-ai/dsh/lib/bin.js
+    //   -> subimos a la raiz del paquete y leemos package.json
+    let paquete = std::path::Path::new(entrypoint)
+        .parent()? // lib/
+        .parent()? // raiz del paquete
+        .join("package.json");
+    let texto = std::fs::read_to_string(paquete).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&texto).ok()?;
+    json.get("version")?.as_str().map(|s| s.to_string())
+}
+
+/// Version estable mas reciente publicada en npm.
+///
+/// Se consulta el registro directamente para no depender de que `npm` este en
+/// el PATH. Devuelve `None` si no hay red o el registro no responde: en ese
+/// caso la aplicacion sigue arrancando con lo que haya instalado.
+fn version_publicada() -> Option<String> {
+    let dir = "registry.npmjs.org:443";
+    let respuesta = https_get(dir, "/@deepseek-ai%2Fdsh/latest")?;
+    let json: serde_json::Value = serde_json::from_str(&respuesta).ok()?;
+    json.get("version")?.as_str().map(|s| s.to_string())
+}
+
+/// Peticion HTTPS GET minima y sin dependencias externas.
+///
+/// Solo se usa para consultar el registro de npm; si algo falla devuelve
+/// `None` y la aplicacion continua sin avisar de actualizaciones.
+fn https_get(dir: &str, ruta: &str) -> Option<String> {
+    // Resolucion DNS + conexion TLS mediante `curl`, presente en cualquier
+    // escritorio Linux. Asi no arrastramos un cliente TLS al binario.
+    let salida = Command::new("curl")
+        .args([
+            "-fsSL",
+            "--max-time",
+            "8",
+            "-H",
+            "Accept: application/json",
+            &format!("https://{dir}{ruta}"),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+
+    if !salida.status.success() {
+        return None;
+    }
+    String::from_utf8(salida.stdout).ok()
+}
+
+/// Instala DSH globalmente si no esta presente.
+///
+/// Se ejecuta solo cuando `entrypoint_dsh()` y `ruta_dsh()` no encuentran
+/// nada: en ese caso la aplicacion no tendria backend con el que arrancar.
+/// Se usa pnpm si esta disponible (es el gestor que DSH documenta) y si no,
+/// npm. Devuelve `true` si la instalacion termino bien.
+fn instalar_dsh_si_falta() -> bool {
+    if entrypoint_dsh().is_some() || ruta_dsh().is_some() {
+        return true; // ya esta instalado
+    }
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = path_ampliado();
+
+    // pnpm y npm son scripts de Node, asi que necesitan encontrar `node` en
+    // el PATH: se lo pasamos ampliado. Preferimos pnpm (el gestor que DSH
+    // documenta) y dejamos npm como respaldo.
+    let ordenes = [
+        format!("{home}/.local/share/pnpm/bin/pnpm add -g @deepseek-ai/dsh"),
+        format!("{home}/.local/share/pnpm/bin/pnpm add -g @deepseek-ai/dsh --force"),
+        "npm install -g @deepseek-ai/dsh".to_string(),
+    ];
+
+    for orden in ordenes {
+        let salida = Command::new("sh")
+            .arg("-c")
+            .arg(&orden)
+            .env("PATH", &path)
+            .stdin(Stdio::null())
+            .output();
+
+        // Basta con que el entrypoint aparezca: es la comprobacion que
+        // realmente importa, no el codigo de salida del gestor.
+        if salida.map(|o| o.status.success()).unwrap_or(false) && entrypoint_dsh().is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Avisa en la pantalla de carga si hay una version mas nueva de DSH.
+///
+/// No actualiza por su cuenta: instalar software en segundo plano sin pedir
+/// permiso es una decision del usuario, no de la aplicacion. Solo informa.
+fn avisar_de_actualizacion(ventana: &tauri::WebviewWindow, entrypoint: &str) {
+    let instalada = match version_instalada(entrypoint) {
+        Some(v) => v,
+        None => return,
+    };
+    let publicada = match version_publicada() {
+        Some(v) => v,
+        None => return, // sin red: no molestamos
+    };
+    if publicada == instalada {
+        return;
+    }
+
+    // Solo avisamos si la publicada es realmente mas nueva (comparacion
+    // numerica por componentes, sin tener en cuenta pre-releases).
+    if !es_mas_nueva(&publicada, &instalada) {
+        return;
+    }
+
+    let aviso = format!(
+        "window.dshAviso && window.dshAviso('avisoVersion', '{publicada}');"
+    );
+    let _ = ventana.eval(&aviso);
+}
+
+/// Compara versiones tipo `1.2.3` o `0.2.0-rc.2` por componentes numericos.
+fn es_mas_nueva(candidata: &str, actual: &str) -> bool {
+    let nums = |v: &str| -> Vec<u32> {
+        v.split(['.', '-'])
+            .take(3)
+            .map(|p| p.parse::<u32>().unwrap_or(0))
+            .collect()
+    };
+    let (a, b) = (nums(candidata), nums(actual));
+    a > b
 }
 
 /// Sirve la pantalla de carga en `127.0.0.1`, en su propio puerto.
@@ -349,7 +530,10 @@ fn main() {
             // (mismo sitio que la GUI, distinto puerto). Para SameSite el
             // sitio es el host, no el puerto, asi que la cookie viaja.
             let puerto_splash = servidor_splash();
-            let url_splash = format!("http://127.0.0.1:{puerto_splash}/");
+            // El idioma viaja en la URL para que la pantalla de carga lo
+            // aplique desde el primer pintado, sin parpadeo de texto.
+            let url_splash =
+                format!("http://127.0.0.1:{puerto_splash}/?lang={}", idioma_del_equipo());
             let ventana = WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -368,6 +552,34 @@ fn main() {
             // 2) El backend arranca en un hilo aparte, sin bloquear la UI.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
+                // 2a) Si DSH no esta instalado, se instala ahora. Hasta aqui
+                //     la ventana ya esta visible con la pantalla de carga, asi
+                //     que la espera no se percibe como un cuelgue.
+                let esta = entrypoint_dsh().is_some() || ruta_dsh().is_some();
+                if !esta {
+                    if let Some(w) = handle.get_webview_window("main") {
+                        let _ = w.eval(
+                            "window.dshEstado && window.dshEstado('instalando');",
+                        );
+                    }
+                    if !instalar_dsh_si_falta() {
+                        if let Some(w) = handle.get_webview_window("main") {
+                            let _ = w.eval(
+                                "window.dshError && window.dshError('errorInstalar');",
+                            );
+                        }
+                        return;
+                    }
+                }
+
+                // 2b) Con DSH presente, avisamos si hay una version mas nueva.
+                //     Va en su propio hilo para no retrasar el arranque.
+                if let (Some(w), Some(entry)) =
+                    (handle.get_webview_window("main"), entrypoint_dsh())
+                {
+                    std::thread::spawn(move || avisar_de_actualizacion(&w, &entry));
+                }
+
                 let (hijo, url) = arrancar_backend(puerto);
 
                 // Guardamos el hijo para poder matarlo al cerrar.
@@ -396,7 +608,7 @@ fn main() {
                     None => {
                         if let Some(w) = win {
                             let _ = w.eval(
-                                "window.dshError && window.dshError('dsh web no respondio a tiempo');",
+                                "window.dshError && window.dshError('errorServidor');",
                             );
                         }
                     }

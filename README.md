@@ -1,31 +1,33 @@
 # DeepSeek Harness Desktop
 
-Aplicación de escritorio para [DeepSeek Harness](https://www.deepseek.com/harness/):
-arranca el servidor local, muestra una pantalla de carga y abre la interfaz en
-una ventana propia, **sin navegador**.
+**English** · [Español](README.es.md) · [Português](README.pt.md)
 
-> DeepSeek no publica cliente para Linux (solo macOS `.dmg` y Windows `.exe`).
-> Este proyecto cubre ese hueco con Tauri + WebKitGTK.
+Desktop application for [DeepSeek Harness](https://www.deepseek.com/harness/):
+it starts the local server, shows a loading screen and opens the interface in
+its own window — **no browser**.
 
-![Pantalla de carga](captura-splash.png)
+> DeepSeek ships no Linux client (macOS `.dmg` and Windows `.exe` only).
+> This project fills that gap with Tauri + WebKitGTK.
 
-## Instalación
+![Loading screen](captura-splash.png)
 
-### Opción A — Paquete `.deb`
+## Install
 
-Descarga el `.deb` desde [Releases](../../releases) e instálalo:
+### Option A — `.deb` package
+
+Download the `.deb` from [Releases](../../releases) and install it:
 
 ```bash
 sudo apt install ./dsh-desktop_0.1.0_amd64.deb
 ```
 
-Aparecerá **DeepSeek Harness** en el menú de aplicaciones. Para desinstalarlo:
+**DeepSeek Harness** will appear in your applications menu. To remove it:
 
 ```bash
 sudo apt remove deep-seek-harness
 ```
 
-### Opción B — Instalador local (sin root)
+### Option B — Local installer (no root)
 
 ```bash
 git clone https://github.com/vicman/deepseek-harness-desktop
@@ -33,98 +35,136 @@ cd deepseek-harness-desktop
 ./instalar.sh
 ```
 
-Todo queda en `~/.local`. También acepta `--deb` (genera el paquete) y
-`--desinstalar`.
+Everything stays under `~/.local`. It also accepts `--deb` (build the package)
+and `--desinstalar` (uninstall).
 
-## Requisitos
+## Requirements
 
-| Componente | Versión | Instalación |
+| Component | Version | Install |
 |---|---|---|
 | Rust | ≥ 1.77 | `curl https://sh.rustup.rs -sSf \| sh` |
 | WebKitGTK | 4.1 | `sudo apt install libwebkit2gtk-4.1-dev` |
 | Node.js | **≥ 22** | `nvm install 24` |
-| `dsh` | 0.2.0-rc.2 | `pnpm add -g @deepseek-ai/dsh` |
+| `dsh` | 0.2.0-rc.2 | **automatic** (see below) |
 
-> **Node importa.** DSH usa `node:util.parseEnv`, que no existe en Node 18.
-> La aplicación busca por su cuenta la versión más reciente de nvm.
+> **Node matters.** DSH uses `node:util.parseEnv`, which does not exist in
+> Node 18. The application finds the newest nvm version on its own.
 
-El `.deb` ya declara `libwebkit2gtk-4.1-0` y `libgtk-3-0`. Node y `dsh` los
-instalas tú.
+The `.deb` already declares `libwebkit2gtk-4.1-0` and `libgtk-3-0`. You install
+Node yourself.
 
-## Cómo funciona
+### DSH management
+
+The application **does not bundle DSH**: it resolves it on every launch, so it
+never gets stuck on a stale copy.
+
+- **If DSH is missing**, the application installs it on startup
+  (`pnpm add -g`, falling back to `npm install -g`). The loading screen shows
+  *"Installing DeepSeek Harness…"* meanwhile.
+- **If a newer version is published**, the loading screen says so and shows
+  the command to update.
+
+**It does not self-update.** Installing software in the background without
+asking is your call, not the application's: it only informs, and you run:
+
+```bash
+pnpm add -g @deepseek-ai/dsh
+```
+
+To compare the installed version against the published one:
+
+```bash
+dsh --version
+npm view @deepseek-ai/dsh version
+```
+
+## Languages
+
+The interface is available in **Spanish, English and Portuguese**. The
+language is picked automatically, in this order:
+
+1. The system locale (`LANG`, `LC_MESSAGES`, `LC_ALL`) — e.g. `es_CO.UTF-8`.
+2. Your preferred browser languages.
+3. **Spanish by default** if none of the three matches.
+
+## How it works
 
 ```
 dsh-desktop
    │
-   ├─ 1. Sirve la pantalla de carga en 127.0.0.1:<puerto libre>
+   ├─ 1. Serves the loading screen at 127.0.0.1:<free port>
    │
-   ├─ 2. Arranca `dsh web --port 3081` como proceso hijo
+   ├─ 2. Starts `dsh web --port 3081` as a child process
    │
-   ├─ 3. Espera a que el servidor responda de verdad (petición HTTP real)
+   ├─ 3. Waits until the server truly responds (a real HTTP request)
    │
-   ├─ 4. Navega con el token; el webview guarda la cookie y muestra la interfaz
+   ├─ 4. Navigates with the token; the webview stores the cookie
    │
-   └─ 5. Al cerrar la ventana, termina el proceso hijo
+   └─ 5. On window close, terminates the child process
 ```
 
-### Decisiones de diseño
+### Design decisions
 
-**El puerto está fijado en 3081.** La cookie de sesión de DSH lleva firmado el
-`host:puerto` (`authority`). Con puerto aleatorio se acumulan cookies de
-sesiones muertas bajo `127.0.0.1` y el servidor responde `401`. Si el 3081 está
-ocupado se busca otro libre.
+**The port is pinned to 3081.** DSH's session cookie has the `host:port`
+(`authority`) signed into it. With a random port, cookies from dead sessions
+pile up under `127.0.0.1` and the server answers `401`. If 3081 is taken, it
+looks for another free port.
 
-**La pantalla de carga se sirve desde `127.0.0.1`, no desde `tauri://`.** La
-cookie de DSH es `SameSite=Strict`: si el splash viniera del esquema interno,
-la navegación posterior sería entre sitios distintos y el navegador **no
-enviaría la cookie** (página en blanco con error `401`).
+**The loading screen is served from `127.0.0.1`, not from `tauri://`.** DSH's
+cookie is `SameSite=Strict`: if the splash came from the internal scheme, the
+following navigation would be cross-site and the browser **would not send the
+cookie** (blank page, `401`).
 
-**Se desactiva el renderizador DMABUF de WebKitGTK.** Con GPU NVIDIA, WebKitGTK
-aborta con `Could not create GBM EGL display: EGL_NOT_INITIALIZED`. La
-aplicación define `WEBKIT_DISABLE_DMABUF_RENDERER=1` por su cuenta.
+**WebKitGTK's DMABUF renderer is disabled.** On NVIDIA GPUs, WebKitGTK aborts
+with `Could not create GBM EGL display: EGL_NOT_INITIALIZED`. The application
+sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` on its own.
 
-## Personalización
+## Customizing
 
-`ui/splash.html` se lee **en tiempo de ejecución**, así que puedes cambiar
-colores, textos o el logotipo y reabrir la aplicación — sin recompilar.
+`ui/splash.html` is read **at runtime**, so you can change colors, text or the
+logo and just reopen the application — no recompiling.
 
-## Compilar
+## Build
 
 ```bash
 cd src-tauri
-cargo build --release            # binario
-cargo tauri build --bundles deb  # paquete .deb
+cargo build --release            # binary
+cargo tauri build --bundles deb  # .deb package
 ```
 
-## Problemas conocidos
+## Known issues
 
-**Se queda en blanco o da error 401.** Suele ser una cookie caducada:
+**Blank window or `401` error.** Usually a stale cookie:
 
 ```bash
 rm -f ~/.local/share/com.vicmandev.dsh.desktop/cookies
 ```
 
-**Destello blanco breve** entre la pantalla de carga y la interfaz (~1 s).
-Es WebKit pintando su lienzo mientras carga. Pendiente de resolver.
+**Brief white flash** between the loading screen and the interface (~1 s).
+That is WebKit painting its canvas while the document loads. Not yet fixed.
 
-**No pasa del splash.** Comprueba `dsh --version` y que Node sea ≥ 22.
+**Stuck on the splash.** Check `dsh --version` and that Node is ≥ 22.
 
-## Estructura
+## Layout
 
 ```
 .
-├── instalar.sh              instalador / desinstalador
+├── instalar.sh              installer / uninstaller
 ├── ui/
-│   ├── splash.html          pantalla de carga (editable sin recompilar)
-│   └── logo-splash.png      logotipo, fondo transparente
-├── debian/                  copyright y changelog del paquete
+│   ├── splash.html          loading screen (editable without recompiling)
+│   └── logo-splash.png      logo, transparent background
+├── debian/                  package copyright and changelog
 └── src-tauri/
-    ├── src/main.rs          arranque, splash y navegación
+    ├── src/main.rs          startup, splash and navigation
     ├── tauri.conf.json
     └── icons/
 ```
 
-## Licencia
+## License
 
-MIT. El logotipo de DeepSeek Harness es marca de DeepSeek y se usa únicamente
-para identificar la aplicación.
+MIT. The DeepSeek Harness logo is a DeepSeek trademark, used solely to
+identify the application.
+
+---
+
+Author: **Victor Manuel Agudelo** &lt;vicmandev@gmail.com&gt;
