@@ -348,18 +348,29 @@ fn servidor_splash() -> u16 {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            // Leemos la peticion (nos basta con consumirla).
+            // Leemos la peticion para saber que recurso se pide.
+            // Solo UNA lectura: si se leyera dos veces, la primera consumiria
+            // la peticion y la segunda devolveria 0 bytes, de modo que
+            // siempre se serviria el HTML y nunca el logotipo.
             let mut buf = [0u8; 2048];
-            let _ = std::io::Read::read(&mut s, &mut buf);
+            let n = std::io::Read::read(&mut s, &mut buf).unwrap_or(0);
+            let peticion = String::from_utf8_lossy(&buf[..n]).to_string();
 
-            let html = cargar_splash();
-            let cuerpo = html.as_bytes();
+            // El logotipo se sirve como archivo aparte, no incrustado en el
+            // HTML: un base64 grande obliga al navegador a decodificarlo
+            // antes de pintar y dejaba un hueco visible sin el logo.
+            let (tipo, cuerpo): (&str, Vec<u8>) = if peticion.contains("logo-splash.png") {
+                ("image/png", cargar_logo())
+            } else {
+                ("text/html; charset=utf-8", cargar_splash().into_bytes())
+            };
+
             let cabecera = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: {tipo}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
                 cuerpo.len()
             );
             let _ = std::io::Write::write_all(&mut s, cabecera.as_bytes());
-            let _ = std::io::Write::write_all(&mut s, cuerpo);
+            let _ = std::io::Write::write_all(&mut s, &cuerpo);
             let _ = s.flush();
         }
     });
@@ -367,44 +378,66 @@ fn servidor_splash() -> u16 {
     puerto
 }
 
-/// Pantalla de carga embebida en el binario.
-/// Carga la pantalla de carga desde el archivo `ui/splash.html`.
+/// Candidatos donde puede estar un recurso de `ui/` (splash, logotipo...).
 ///
-/// Se lee en tiempo de ejecucion (no incrustada) para poder ajustar
-/// el diseno sin recompilar el binario de Rust.
-fn cargar_splash() -> String {
+/// Se cubren tres escenarios: ejecucion desde `target/release`, instalacion
+/// en `~/.local/share` y paquete `.deb` en `/usr/share`.
+fn rutas_ui(nombre: &str) -> Vec<std::path::PathBuf> {
     let mut rutas: Vec<std::path::PathBuf> = Vec::new();
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            // El splash vive en <proyecto>/ui/splash.html. Desde
-            // target/release/ hay que subir tres niveles; se prueban varias
-            // profundidades para tolerar tambien una instalacion junto al
-            // binario (paquete .deb).
-            rutas.push(dir.join("splash.html"));
-            rutas.push(dir.join("ui/splash.html"));
-            rutas.push(dir.join("../ui/splash.html"));
-            rutas.push(dir.join("../../ui/splash.html"));
-            rutas.push(dir.join("../../../ui/splash.html"));
+            // Desde target/release hay que subir tres niveles hasta la raiz
+            // del proyecto; se prueban varias profundidades para tolerar
+            // tambien una instalacion junto al binario.
+            rutas.push(dir.join(nombre));
+            rutas.push(dir.join(format!("ui/{nombre}")));
+            rutas.push(dir.join(format!("../ui/{nombre}")));
+            rutas.push(dir.join(format!("../../ui/{nombre}")));
+            rutas.push(dir.join(format!("../../../ui/{nombre}")));
         }
     }
+
     let home = std::env::var("HOME").unwrap_or_default();
     rutas.push(std::path::PathBuf::from(format!(
-        "{home}/.local/share/dsh-desktop/ui/splash.html"
+        "{home}/.local/share/dsh-desktop/ui/{nombre}"
     )));
-    // Rutas de una instalacion por paquete (.deb instala aqui).
-    rutas.push(std::path::PathBuf::from(
-        "/usr/share/dsh-desktop/ui/splash.html",
-    ));
-    rutas.push(std::path::PathBuf::from(
-        "/usr/local/share/dsh-desktop/ui/splash.html",
-    ));
-    for r in rutas {
+    rutas.push(std::path::PathBuf::from(format!(
+        "/usr/share/dsh-desktop/ui/{nombre}"
+    )));
+    rutas.push(std::path::PathBuf::from(format!(
+        "/usr/local/share/dsh-desktop/ui/{nombre}"
+    )));
+
+    rutas
+}
+
+/// Carga la pantalla de carga desde `ui/splash.html`.
+///
+/// Se lee en tiempo de ejecucion (no incrustada) para poder ajustar el diseno
+/// sin recompilar el binario de Rust.
+fn cargar_splash() -> String {
+    for r in rutas_ui("splash.html") {
         if let Ok(t) = std::fs::read_to_string(&r) {
             return t;
         }
     }
     // Ultimo recurso: pagina minima si falta el archivo.
     "<!DOCTYPE html><html><body style=\"margin:0;background:#0d0f12;color:#e6e8eb;\n     display:grid;place-items:center;height:100vh;font:15px system-ui\">\n     <p>Cargando DeepSeek Harness...</p></body></html>".to_string()
+}
+
+/// Carga el logotipo de la pantalla de carga como bytes PNG.
+///
+/// Se sirve como recurso aparte en lugar de incrustarlo en el HTML: un base64
+/// grande obliga al navegador a decodificarlo antes de pintar, y ese hueco se
+/// veia como un destello claro sin el logo.
+fn cargar_logo() -> Vec<u8> {
+    for r in rutas_ui("logo-splash.png") {
+        if let Ok(b) = std::fs::read(&r) {
+            return b;
+        }
+    }
+    Vec::new()
 }
 
 /// Espera a que algo acepte conexiones TCP en el puerto dado.

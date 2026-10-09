@@ -34,6 +34,7 @@
         "depends": ["libc6 (>= 2.39)"],
         "files": {
           "/usr/share/dsh-desktop/ui/splash.html": "../ui/splash.html",
+          "/usr/share/dsh-desktop/ui/logo-splash.png": "../ui/logo-splash.png",
           "/usr/share/doc/deep-seek-harness/copyright": "../debian/copyright",
           "/usr/share/doc/deep-seek-harness/changelog.gz": "../debian/changelog.gz"
         }
