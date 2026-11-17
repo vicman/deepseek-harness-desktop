@@ -60,11 +60,15 @@ que nunca se queda con una copia vieja.
 - **Si DSH no está instalado**, la aplicación lo instala sola al arrancar
   (`pnpm add -g`, con `npm install -g` como respaldo). La pantalla de carga
   muestra *«Instalando DeepSeek Harness…»* mientras tanto.
-- **Si hay una versión más nueva publicada**, la pantalla de carga lo avisa
-  con el comando para actualizar.
+- **Si hay una versión más nueva publicada**, aparece una notificación de
+  escritorio con un botón **Actualizar**. Al pulsarlo, la app ejecuta
+  `pnpm add -g @deepseek-ai/dsh` y avisa cuando termina; la versión nueva se
+  usa al reiniciar la aplicación.
 
-**No actualiza sola.** Instalar software en segundo plano sin pedir permiso
-es una decisión tuya, no de la aplicación: solo informa y tú ejecutas:
+**No actualiza sin permiso.** Instalar software en segundo plano es una
+decisión tuya, no de la aplicación: solo actualiza si pulsas el botón. Si tu
+escritorio no admite botones en las notificaciones, el aviso trae el comando
+para hacerlo a mano:
 
 ```bash
 pnpm add -g @deepseek-ai/dsh

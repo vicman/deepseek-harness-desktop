@@ -259,7 +259,15 @@ fn instalar_dsh_si_falta() -> bool {
     if entrypoint_dsh().is_some() || ruta_dsh().is_some() {
         return true; // ya esta instalado
     }
+    // Basta con que el entrypoint aparezca: es la comprobacion que realmente
+    // importa, no el codigo de salida del gestor.
+    ejecutar_instalacion(|| entrypoint_dsh().is_some())
+}
 
+/// Ejecuta `pnpm add -g @deepseek-ai/dsh` (con npm como respaldo) hasta que
+/// `listo()` confirme el resultado. Sirve para instalar y para actualizar:
+/// sin version explicita, el gestor instala la etiqueta `latest`.
+fn ejecutar_instalacion(listo: impl Fn() -> bool) -> bool {
     let home = std::env::var("HOME").unwrap_or_default();
     let path = path_ampliado();
 
@@ -280,19 +288,84 @@ fn instalar_dsh_si_falta() -> bool {
             .stdin(Stdio::null())
             .output();
 
-        // Basta con que el entrypoint aparezca: es la comprobacion que
-        // realmente importa, no el codigo de salida del gestor.
-        if salida.map(|o| o.status.success()).unwrap_or(false) && entrypoint_dsh().is_some() {
+        if salida.map(|o| o.status.success()).unwrap_or(false) && listo() {
             return true;
         }
     }
     false
 }
 
-/// Avisa en la pantalla de carga si hay una version mas nueva de DSH.
+/// Textos de las notificaciones de actualizacion, en el idioma del equipo.
+fn texto_aviso(clave: &str, instalada: &str, publicada: &str) -> String {
+    const ORDEN: &str = "pnpm add -g @deepseek-ai/dsh";
+    match (idioma_del_equipo(), clave) {
+        ("en", "titulo") => "DeepSeek Harness update available".into(),
+        ("en", "cuerpo") => format!("Installed: {instalada}\nNew: {publicada}"),
+        ("en", "manual") => format!("Installed: {instalada}\nNew: {publicada}\nUpdate with: {ORDEN}"),
+        ("en", "boton") => "Update".into(),
+        ("en", "actualizando") => format!("Updating DeepSeek Harness to {publicada}…"),
+        ("en", "listo") => format!("Updated to {publicada}. Restart the app to use it."),
+        ("en", "fallo") => format!("Could not update. Run it manually: {ORDEN}"),
+
+        ("pt", "titulo") => "Atualização do DeepSeek Harness disponível".into(),
+        ("pt", "cuerpo") => format!("Instalada: {instalada}\nNova: {publicada}"),
+        ("pt", "manual") => format!("Instalada: {instalada}\nNova: {publicada}\nAtualize com: {ORDEN}"),
+        ("pt", "boton") => "Atualizar".into(),
+        ("pt", "actualizando") => format!("Atualizando o DeepSeek Harness para {publicada}…"),
+        ("pt", "listo") => format!("Atualizado para {publicada}. Reinicie o aplicativo para usá-la."),
+        ("pt", "fallo") => format!("Não foi possível atualizar. Execute manualmente: {ORDEN}"),
+
+        (_, "titulo") => "Hay una actualización de DeepSeek Harness".into(),
+        (_, "cuerpo") => format!("Instalada: {instalada}\nNueva: {publicada}"),
+        (_, "manual") => format!("Instalada: {instalada}\nNueva: {publicada}\nActualiza con: {ORDEN}"),
+        (_, "boton") => "Actualizar".into(),
+        (_, "actualizando") => format!("Actualizando DeepSeek Harness a {publicada}…"),
+        (_, "listo") => format!("Actualizado a {publicada}. Reinicia la aplicación para usarla."),
+        (_, _) => format!("No se pudo actualizar. Hazlo a mano: {ORDEN}"),
+    }
+}
+
+/// Muestra una notificacion de escritorio con `notify-send`.
 ///
-/// No actualiza por su cuenta: instalar software en segundo plano sin pedir
-/// permiso es una decision del usuario, no de la aplicacion. Solo informa.
+/// Con `boton`, la notificacion lleva una accion y la llamada BLOQUEA hasta
+/// que el usuario la pulsa o la descarta; devuelve `true` si la pulso. Si el
+/// `notify-send` del sistema (o el servidor de notificaciones) no admite
+/// acciones, se muestra `cuerpo_sin_boton` como aviso simple. Si no hay
+/// `notify-send`, no pasa nada: la app sigue funcionando igual.
+fn notificar(titulo: &str, cuerpo: &str, boton: Option<&str>, cuerpo_sin_boton: &str) -> bool {
+    let base = ["--app-name=DeepSeek Harness", "--icon=dsh"];
+
+    if let Some(boton) = boton {
+        let accion = format!("--action=actualizar={boton}");
+        let salida = Command::new("notify-send")
+            .args(base)
+            .arg(&accion)
+            .args([titulo, cuerpo])
+            .stdin(Stdio::null())
+            .output();
+        if let Ok(o) = salida {
+            if o.status.success() {
+                // notify-send imprime el nombre de la accion pulsada.
+                return String::from_utf8_lossy(&o.stdout).trim() == "actualizar";
+            }
+        }
+        // Sin soporte de acciones: caemos al aviso simple.
+    }
+
+    let _ = Command::new("notify-send")
+        .args(base)
+        .args([titulo, cuerpo_sin_boton])
+        .stdin(Stdio::null())
+        .output();
+    false
+}
+
+/// Avisa si hay una version mas nueva de DSH.
+///
+/// El aviso principal es una notificacion de escritorio: la pantalla de carga
+/// desaparece en cuanto arranca el servidor, asi que un aviso solo ahi se
+/// perdia. La notificacion lleva un boton «Actualizar»; la app solo instala
+/// si el usuario lo pulsa, nunca en segundo plano sin permiso.
 fn avisar_de_actualizacion(ventana: &tauri::WebviewWindow, entrypoint: &str) {
     let instalada = match version_instalada(entrypoint) {
         Some(v) => v,
@@ -315,7 +388,26 @@ fn avisar_de_actualizacion(ventana: &tauri::WebviewWindow, entrypoint: &str) {
     let aviso = format!(
         "window.dshAviso && window.dshAviso('avisoVersion', '{publicada}');"
     );
+    // Tambien en la pantalla de carga, por si todavia esta visible.
     let _ = ventana.eval(&aviso);
+
+    let t = |clave| texto_aviso(clave, &instalada, &publicada);
+    let pulso = notificar(&t("titulo"), &t("cuerpo"), Some(&t("boton")), &t("manual"));
+    if !pulso {
+        return;
+    }
+
+    notificar(&t("titulo"), &t("actualizando"), None, &t("actualizando"));
+    // Lista cuando el entrypoint (resuelto de nuevo, pues pnpm lo mueve)
+    // ya no es mas viejo que la version publicada.
+    let ok = ejecutar_instalacion(|| {
+        entrypoint_dsh()
+            .and_then(|e| version_instalada(&e))
+            .map(|v| !es_mas_nueva(&publicada, &v))
+            .unwrap_or(false)
+    });
+    let clave = if ok { "listo" } else { "fallo" };
+    notificar(&t("titulo"), &t(clave), None, &t(clave));
 }
 
 /// Compara versiones tipo `1.2.3` o `0.2.0-rc.2` por componentes numericos.

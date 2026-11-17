@@ -61,11 +61,15 @@ never gets stuck on a stale copy.
 - **If DSH is missing**, the application installs it on startup
   (`pnpm add -g`, falling back to `npm install -g`). The loading screen shows
   *"Installing DeepSeek Harness…"* meanwhile.
-- **If a newer version is published**, the loading screen says so and shows
-  the command to update.
+- **If a newer version is published**, a desktop notification appears with
+  an **Update** button. Clicking it runs `pnpm add -g @deepseek-ai/dsh` and
+  notifies you when it finishes; the new version is used after restarting
+  the app.
 
-**It does not self-update.** Installing software in the background without
-asking is your call, not the application's: it only informs, and you run:
+**It never updates without asking.** Installing software in the background is
+your call, not the application's: it only updates if you click the button. If
+your desktop does not support notification buttons, the notice includes the
+command to run manually:
 
 ```bash
 pnpm add -g @deepseek-ai/dsh

@@ -1,3 +1,13 @@
+dsh-desktop (0.1.1) unstable; urgency=medium
+
+  * Aviso de actualización de DSH como notificación de escritorio, con botón
+    «Actualizar» que ejecuta la actualización solo si el usuario lo pulsa.
+    Antes el aviso solo aparecía en la pantalla de carga y se perdía.
+  * El paquete recomienda curl y libnotify-bin (consulta de versión y
+    notificaciones).
+
+ -- Victor Manuel Agudelo <vicmandev@gmail.com>  Tue, 17 Nov 2026 15:56:38 -0500
+
 dsh-desktop (0.1.0) unstable; urgency=medium
 
   * Versión inicial.
