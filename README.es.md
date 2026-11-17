@@ -18,13 +18,24 @@ una ventana propia, **sin navegador**.
 Descarga el `.deb` desde [Releases](../../releases) e instálalo:
 
 ```bash
-sudo apt install ./dsh-desktop_0.1.0_amd64.deb
+sudo apt install ./dsh-desktop_<versión>_amd64.deb
 ```
 
 Aparecerá **DeepSeek Harness** en el menú de aplicaciones. Para desinstalarlo:
 
 ```bash
 sudo apt remove deep-seek-harness
+```
+
+Funciona en Ubuntu 22.04 o posterior (y derivadas como Mint o Pop!_OS).
+
+### Opción A2 — AppImage (cualquier distribución)
+
+En el mismo release hay un `.AppImage` que no necesita instalación:
+
+```bash
+chmod +x dsh-desktop_<versión>_amd64.AppImage
+./dsh-desktop_<versión>_amd64.AppImage
 ```
 
 ### Opción B — Instalador local (sin root)
@@ -60,10 +71,14 @@ que nunca se queda con una copia vieja.
 - **Si DSH no está instalado**, la aplicación lo instala sola al arrancar
   (`pnpm add -g`, con `npm install -g` como respaldo). La pantalla de carga
   muestra *«Instalando DeepSeek Harness…»* mientras tanto.
-- **Si hay una versión más nueva publicada**, aparece una notificación de
-  escritorio con un botón **Actualizar**. Al pulsarlo, la app ejecuta
-  `pnpm add -g @deepseek-ai/dsh` y avisa cuando termina; la versión nueva se
-  usa al reiniciar la aplicación.
+- **Si hay una versión más nueva publicada** (se revisa al arrancar y cada 6
+  horas mientras la app sigue abierta), aparece una notificación de
+  escritorio con dos botones:
+  - **Actualizar**: la app ejecuta `pnpm add -g @deepseek-ai/dsh` (o `npm`
+    si DSH se instaló con npm) y avisa cuando termina, con un botón
+    **Reiniciar ahora** para empezar a usar la versión nueva.
+  - **Omitir esta versión**: no vuelve a avisar de esa versión; sí de la
+    siguiente que se publique.
 
 **No actualiza sin permiso.** Instalar software en segundo plano es una
 decisión tuya, no de la aplicación: solo actualiza si pulsas el botón. Si tu
@@ -124,16 +139,28 @@ aplicación define `WEBKIT_DISABLE_DMABUF_RENDERER=1` por su cuenta.
 
 ## Personalización
 
-`ui/splash.html` se lee **en tiempo de ejecución**, así que puedes cambiar
-colores, textos o el logotipo y reabrir la aplicación — sin recompilar.
+La pantalla de carga (`ui/splash.html`) y su logotipo van **incrustados en el
+binario**. Si ejecutas la app desde el código (`./instalar.sh` o
+`target/release`), se prefiere la copia de `ui/` en disco: puedes cambiar
+colores o el logotipo y reabrir la aplicación sin recompilar.
+
+Los textos de todos los idiomas están en `ui/textos.json`, compartido por la
+pantalla de carga y las notificaciones. Un test comprueba que los tres idiomas
+tengan las mismas claves (`cargo test`).
 
 ## Compilar
 
 ```bash
 cd src-tauri
+cargo test                       # tests
 cargo build --release            # binario
 cargo tauri build --bundles deb  # paquete .deb
 ```
+
+Los paquetes de cada release los compila GitHub Actions
+([`.github/workflows/release.yml`](.github/workflows/release.yml)) al subir un
+tag `v*`, en Ubuntu 22.04 para que funcionen también en sistemas más antiguos
+que el de compilación.
 
 ## Problemas conocidos
 
@@ -143,10 +170,9 @@ cargo tauri build --bundles deb  # paquete .deb
 rm -f ~/.local/share/com.vicmandev.dsh.desktop/cookies
 ```
 
-**Destello blanco breve** entre la pantalla de carga y la interfaz (~1 s).
-Es WebKit pintando su lienzo mientras carga. Pendiente de resolver.
-
-**No pasa del splash.** Comprueba `dsh --version` y que Node sea ≥ 22.
+**No pasa del splash.** Comprueba `dsh --version`. Si el problema es Node
+(< 22 o ausente), la pantalla de carga ya lo dice con el comando para
+instalarlo.
 
 ## Estructura
 
@@ -154,11 +180,18 @@ Es WebKit pintando su lienzo mientras carga. Pendiente de resolver.
 .
 ├── instalar.sh              instalador / desinstalador
 ├── ui/
-│   ├── splash.html          pantalla de carga (editable sin recompilar)
+│   ├── splash.html          pantalla de carga (incrustada en el binario)
+│   ├── textos.json          textos en es/en/pt (splash y notificaciones)
 │   └── logo-splash.png      logotipo, fondo transparente
 ├── debian/                  copyright y changelog del paquete
 └── src-tauri/
-    ├── src/main.rs          arranque, splash y navegación
+    ├── src/main.rs          arranque y ventana
+    ├── src/backend.rs       proceso `dsh web`
+    ├── src/dsh.rs           localizar/instalar DSH y comprobar Node
+    ├── src/actualizacion.rs avisos de versión nueva
+    ├── src/splash.rs        servidor de la pantalla de carga
+    ├── src/textos.rs        idioma y textos
+    ├── src/versiones.rs     comparación semver
     ├── tauri.conf.json
     └── icons/
 ```

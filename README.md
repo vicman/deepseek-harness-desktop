@@ -18,13 +18,24 @@ its own window — **no browser**.
 Download the `.deb` from [Releases](../../releases) and install it:
 
 ```bash
-sudo apt install ./dsh-desktop_0.1.0_amd64.deb
+sudo apt install ./dsh-desktop_<version>_amd64.deb
 ```
 
 **DeepSeek Harness** will appear in your applications menu. To remove it:
 
 ```bash
 sudo apt remove deep-seek-harness
+```
+
+Works on Ubuntu 22.04 or newer (and derivatives such as Mint or Pop!_OS).
+
+### Option A2 — AppImage (any distribution)
+
+The same release includes an `.AppImage` that needs no installation:
+
+```bash
+chmod +x dsh-desktop_<version>_amd64.AppImage
+./dsh-desktop_<version>_amd64.AppImage
 ```
 
 ### Option B — Local installer (no root)
@@ -61,10 +72,14 @@ never gets stuck on a stale copy.
 - **If DSH is missing**, the application installs it on startup
   (`pnpm add -g`, falling back to `npm install -g`). The loading screen shows
   *"Installing DeepSeek Harness…"* meanwhile.
-- **If a newer version is published**, a desktop notification appears with
-  an **Update** button. Clicking it runs `pnpm add -g @deepseek-ai/dsh` and
-  notifies you when it finishes; the new version is used after restarting
-  the app.
+- **If a newer version is published** (checked at startup and every 6 hours
+  while the app stays open), a desktop notification appears with
+  two buttons:
+  - **Update**: the app runs `pnpm add -g @deepseek-ai/dsh` (or `npm` if DSH
+    was installed with npm) and notifies you when it finishes, with a
+    **Restart now** button to start using the new version.
+  - **Skip this version**: it won't notify about that version again, only
+    about the next one published.
 
 **It never updates without asking.** Installing software in the background is
 your call, not the application's: it only updates if you click the button. If
@@ -125,16 +140,28 @@ sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` on its own.
 
 ## Customizing
 
-`ui/splash.html` is read **at runtime**, so you can change colors, text or the
-logo and just reopen the application — no recompiling.
+The loading screen (`ui/splash.html`) and its logo are **embedded in the
+binary**. When you run the app from source (`./instalar.sh` or
+`target/release`), the copy in `ui/` on disk is preferred: you can change
+colors or the logo and reopen the application without recompiling.
+
+All texts for every language live in `ui/textos.json`, shared by the loading
+screen and the notifications. A test checks that all three languages have the
+same keys (`cargo test`).
 
 ## Build
 
 ```bash
 cd src-tauri
+cargo test                       # tests
 cargo build --release            # binary
 cargo tauri build --bundles deb  # .deb package
 ```
+
+Release packages are built by GitHub Actions
+([`.github/workflows/release.yml`](.github/workflows/release.yml)) when a `v*`
+tag is pushed, on Ubuntu 22.04 so they also run on systems older than the one
+used to build.
 
 ## Known issues
 
@@ -144,10 +171,8 @@ cargo tauri build --bundles deb  # .deb package
 rm -f ~/.local/share/com.vicmandev.dsh.desktop/cookies
 ```
 
-**Brief white flash** between the loading screen and the interface (~1 s).
-That is WebKit painting its canvas while the document loads. Not yet fixed.
-
-**Stuck on the splash.** Check `dsh --version` and that Node is ≥ 22.
+**Stuck on the splash.** Check `dsh --version`. If the problem is Node (< 22
+or missing), the loading screen now says so, with the command to install it.
 
 ## Layout
 
@@ -155,11 +180,18 @@ That is WebKit painting its canvas while the document loads. Not yet fixed.
 .
 ├── instalar.sh              installer / uninstaller
 ├── ui/
-│   ├── splash.html          loading screen (editable without recompiling)
+│   ├── splash.html          loading screen (embedded in the binary)
+│   ├── textos.json          es/en/pt texts (splash and notifications)
 │   └── logo-splash.png      logo, transparent background
 ├── debian/                  package copyright and changelog
 └── src-tauri/
-    ├── src/main.rs          startup, splash and navigation
+    ├── src/main.rs          startup and window
+    ├── src/backend.rs       the `dsh web` process
+    ├── src/dsh.rs           find/install DSH and check Node
+    ├── src/actualizacion.rs new-version notices
+    ├── src/splash.rs        loading-screen server
+    ├── src/textos.rs        language and texts
+    ├── src/versiones.rs     semver comparison
     ├── tauri.conf.json
     └── icons/
 ```

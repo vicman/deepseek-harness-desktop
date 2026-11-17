@@ -1,0 +1,82 @@
+# Compila los paquetes de Linux y los adjunta al release del tag.
+#
+# Se compila en Ubuntu 22.04 a proposito: el binario queda enlazado contra la
+# glibc 2.35, asi que el .deb y el AppImage funcionan en 22.04 y posteriores
+# (y en otras distros con WebKitGTK 4.1). Compilado en la laptop (24.04)
+# exigiria glibc 2.39.
+#
+# Se dispara al subir un tag v* o a mano (Actions → Release → Run workflow,
+# indicando un tag ya existente).
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag existente al que adjuntar los paquetes (p. ej. v0.1.2)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      # linuxdeploy (AppImage) es a su vez un AppImage y el runner no tiene
+      # FUSE: se ejecuta extrayendolo.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    defaults:
+      run:
+        working-directory: dsh-desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dsh-desktop/src-tauri
+
+      - name: Comprobar que el tag coincide con la version
+        run: |
+          version=$(grep -m1 '"version"' tauri.conf.json | sed 's/.*"\([0-9][^"]*\)".*/\1/')
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tauri.conf.json dice $version pero el tag es $TAG"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Compilar .deb y AppImage
+        run: npx --yes @tauri-apps/cli@2 build --bundles deb,appimage
+
+      - name: Adjuntar al release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p ../../dist
+          cp target/release/bundle/deb/*.deb "../../dist/dsh-desktop_${VERSION}_amd64.deb"
+          cp target/release/bundle/appimage/*.AppImage "../../dist/dsh-desktop_${VERSION}_amd64.AppImage"
+          cd ../../dist
+          sha256sum * > SHA256SUMS
+          # El release puede existir ya (creado a mano con sus notas): en ese
+          # caso solo se suben o reemplazan los archivos.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "DeepSeek Harness Desktop $VERSION" --generate-notes
+          fi
+          gh release upload "$TAG" ./* --clobber

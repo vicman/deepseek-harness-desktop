@@ -39,44 +39,11 @@ animation:correr 1.35s cubic-bezier(.65,.05,.36,1) infinite}
 //   2. El del equipo (navigator.language).
 //   3. Espanol por defecto.
 // Espanol, ingles y portugues; cualquier otro idioma cae al espanol.
-var TEXTOS = {
-  es: {
-    pasos: ["Iniciando\u2026","Cargando complementos\u2026",
-            "Preparando el espacio de trabajo\u2026","Casi listo\u2026"],
-    instalando: "Instalando DeepSeek Harness\u2026",
-    errorInstalar: "No se pudo instalar DeepSeek Harness.\n" +
-                   "Instalalo a mano con: pnpm add -g @deepseek-ai/dsh",
-    errorServidor: "DeepSeek Harness no respondio a tiempo.",
-    avisoVersion: function (v) {
-      return "Hay una version nueva de DeepSeek Harness (" + v + "). " +
-             "Actualiza con: pnpm add -g @deepseek-ai/dsh";
-    }
-  },
-  en: {
-    pasos: ["Starting\u2026","Loading components\u2026",
-            "Preparing your workspace\u2026","Almost ready\u2026"],
-    instalando: "Installing DeepSeek Harness\u2026",
-    errorInstalar: "Could not install DeepSeek Harness.\n" +
-                   "Install it manually with: pnpm add -g @deepseek-ai/dsh",
-    errorServidor: "DeepSeek Harness did not respond in time.",
-    avisoVersion: function (v) {
-      return "A new version of DeepSeek Harness is available (" + v + "). " +
-             "Update with: pnpm add -g @deepseek-ai/dsh";
-    }
-  },
-  pt: {
-    pasos: ["Iniciando\u2026","Carregando componentes\u2026",
-            "Preparando seu espaco de trabalho\u2026","Quase pronto\u2026"],
-    instalando: "Instalando o DeepSeek Harness\u2026",
-    errorInstalar: "Nao foi possivel instalar o DeepSeek Harness.\n" +
-                   "Instale manualmente com: pnpm add -g @deepseek-ai/dsh",
-    errorServidor: "O DeepSeek Harness nao respondeu a tempo.",
-    avisoVersion: function (v) {
-      return "Ha uma nova versao do DeepSeek Harness (" + v + "). " +
-             "Atualize com: pnpm add -g @deepseek-ai/dsh";
-    }
-  }
-};
+// Los textos viven en ui/textos.json, compartidos con las notificaciones de
+// Rust. La aplicacion los inyecta aqui al servir la pagina (sustituye el
+// marcador), asi el primer pintado ya sale traducido. Si se abre el archivo
+// suelto, sin la app, queda un texto minimo para no romper la pagina.
+var TEXTOS = /*TEXTOS*/null || { es: { pasos: ["Iniciando\u2026"] } };
 
 // Normaliza "es-CO", "en_US", "pt-BR" -> "es" | "en" | "pt".
 function normalizar(codigo) {
@@ -132,10 +99,14 @@ rotar();
 // ---------------------------------------------------------------------------
 // Los mensajes llegan como CLAVES ("instalando", "errorServidor"...) para que
 // el texto salga en el idioma elegido y no incrustado desde Rust.
-function traducir(clave, dato) {
-  var v = T[clave];
-  if (typeof v === "function") return v(dato);
-  return v || clave;
+// Los datos ({publicada}, {node}...) sustituyen los marcadores del texto;
+// {orden} es siempre el comando de instalacion.
+function traducir(clave, datos) {
+  var v = T[clave] || TEXTOS.es[clave] || clave;
+  var d = Object.assign({ orden: "pnpm add -g @deepseek-ai/dsh" }, datos || {});
+  return String(v).replace(/\{(\w+)\}/g, function (m, k) {
+    return k in d ? d[k] : m;
+  });
 }
 
 // dshEstado: fija un mensaje concreto (p. ej. mientras instala DSH).
@@ -146,7 +117,7 @@ window.dshEstado = function (clave) {
 };
 
 // dshAviso: aviso discreto que no bloquea el arranque.
-window.dshAviso = function (clave, dato) {
+window.dshAviso = function (clave, datos) {
   var a = document.getElementById("aviso");
   if (!a) {
     a = document.createElement("p");
@@ -155,15 +126,16 @@ window.dshAviso = function (clave, dato) {
       "color:#8b93a0;max-width:420px;text-align:center";
     document.querySelector(".caja").appendChild(a);
   }
-  a.textContent = traducir(clave, dato);
+  a.textContent = traducir(clave, datos);
 };
 
 // dshError: fallo irrecuperable; se detiene la animacion y se resalta.
-window.dshError = function (clave) {
+window.dshError = function (clave, datos) {
   if (temporizador) { clearInterval(temporizador); temporizador = null; }
   e.style.color = "#e5726b";
   e.style.opacity = "1";
-  e.textContent = traducir(clave);
+  e.style.whiteSpace = "pre-line"; // los errores traen saltos de linea
+  e.textContent = traducir(clave, datos);
   var b = document.querySelector(".barra");
   if (b) { b.style.background = "#3a2224"; }
 };

@@ -1,0 +1,62 @@
+{
+  "es": {
+    "pasos": ["Iniciando…", "Cargando complementos…", "Preparando el espacio de trabajo…", "Casi listo…"],
+    "instalando": "Instalando DeepSeek Harness…",
+    "errorInstalar": "No se pudo instalar DeepSeek Harness.\nInstálalo a mano con: {orden}",
+    "errorServidor": "DeepSeek Harness no respondió a tiempo.",
+    "errorNode": "DeepSeek Harness necesita Node.js 22 o superior (encontrado: {node}).\nInstálalo con: nvm install 24",
+    "errorSinNode": "DeepSeek Harness necesita Node.js 22 o superior y no se encontró ninguno.\nInstálalo con: nvm install 24",
+    "avisoVersion": "Hay una versión nueva de DeepSeek Harness ({publicada}). Actualiza con: {orden}",
+    "notificacion": {
+      "titulo": "Hay una actualización de DeepSeek Harness",
+      "cuerpo": "Instalada: {instalada}\nNueva: {publicada}",
+      "manual": "Instalada: {instalada}\nNueva: {publicada}\nActualiza con: {orden}",
+      "boton": "Actualizar",
+      "omitir": "Omitir esta versión",
+      "actualizando": "Actualizando DeepSeek Harness a {publicada}…",
+      "listo": "Actualizado a {publicada}. Reinicia la aplicación para usarla.",
+      "reiniciar": "Reiniciar ahora",
+      "fallo": "No se pudo actualizar. Hazlo a mano: {orden}"
+    }
+  },
+  "en": {
+    "pasos": ["Starting…", "Loading components…", "Preparing your workspace…", "Almost ready…"],
+    "instalando": "Installing DeepSeek Harness…",
+    "errorInstalar": "Could not install DeepSeek Harness.\nInstall it manually with: {orden}",
+    "errorServidor": "DeepSeek Harness did not respond in time.",
+    "errorNode": "DeepSeek Harness needs Node.js 22 or newer (found: {node}).\nInstall it with: nvm install 24",
+    "errorSinNode": "DeepSeek Harness needs Node.js 22 or newer and none was found.\nInstall it with: nvm install 24",
+    "avisoVersion": "A new version of DeepSeek Harness is available ({publicada}). Update with: {orden}",
+    "notificacion": {
+      "titulo": "DeepSeek Harness update available",
+      "cuerpo": "Installed: {instalada}\nNew: {publicada}",
+      "manual": "Installed: {instalada}\nNew: {publicada}\nUpdate with: {orden}",
+      "boton": "Update",
+      "omitir": "Skip this version",
+      "actualizando": "Updating DeepSeek Harness to {publicada}…",
+      "listo": "Updated to {publicada}. Restart the app to use it.",
+      "reiniciar": "Restart now",
+      "fallo": "Could not update. Run it manually: {orden}"
+    }
+  },
+  "pt": {
+    "pasos": ["Iniciando…", "Carregando componentes…", "Preparando seu espaço de trabalho…", "Quase pronto…"],
+    "instalando": "Instalando o DeepSeek Harness…",
+    "errorInstalar": "Não foi possível instalar o DeepSeek Harness.\nInstale manualmente com: {orden}",
+    "errorServidor": "O DeepSeek Harness não respondeu a tempo.",
+    "errorNode": "O DeepSeek Harness precisa do Node.js 22 ou superior (encontrado: {node}).\nInstale com: nvm install 24",
+    "errorSinNode": "O DeepSeek Harness precisa do Node.js 22 ou superior e nenhum foi encontrado.\nInstale com: nvm install 24",
+    "avisoVersion": "Há uma nova versão do DeepSeek Harness ({publicada}). Atualize com: {orden}",
+    "notificacion": {
+      "titulo": "Atualização do DeepSeek Harness disponível",
+      "cuerpo": "Instalada: {instalada}\nNova: {publicada}",
+      "manual": "Instalada: {instalada}\nNova: {publicada}\nAtualize com: {orden}",
+      "boton": "Atualizar",
+      "omitir": "Ignorar esta versão",
+      "actualizando": "Atualizando o DeepSeek Harness para {publicada}…",
+      "listo": "Atualizado para {publicada}. Reinicie o aplicativo para usá-la.",
+      "reiniciar": "Reiniciar agora",
+      "fallo": "Não foi possível atualizar. Execute manualmente: {orden}"
+    }
+  }
+}

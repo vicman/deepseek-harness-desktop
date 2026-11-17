@@ -1,3 +1,22 @@
+dsh-desktop (0.1.2) unstable; urgency=medium
+
+  * La notificación de versión nueva detecta la versión estable de una
+    prerelease (0.2.2 > 0.2.2-rc.1) y compara las prerelease entre sí.
+  * Detecta DSH instalado con npm o con cualquier versión de pnpm, y
+    actualiza con el mismo gestor con el que se instaló.
+  * Botones «Omitir esta versión» y «Reiniciar ahora»; revisión de
+    versiones cada 6 horas con la app abierta.
+  * Sin destello blanco entre la pantalla de carga y la interfaz.
+  * Mensaje claro si falta Node.js 22 o superior.
+  * La pantalla de carga va incrustada en el binario; ya no se usa una
+    copia vieja que quedara en ~/.local/share.
+  * Textos de todos los idiomas en ui/textos.json; código en módulos y
+    tests unitarios.
+  * Paquetes compilados en Ubuntu 22.04 por GitHub Actions; se añade
+    AppImage.
+
+ -- Victor Manuel Agudelo <vicmandev@gmail.com>  Tue, 17 Nov 2026 16:36:07 -0500
+
 dsh-desktop (0.1.1) unstable; urgency=medium
 
   * Aviso de actualización de DSH como notificación de escritorio, con botón

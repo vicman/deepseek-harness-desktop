@@ -3,633 +3,37 @@
 // Flujo de arranque (no bloqueante):
 //   1. Se elige un puerto libre.
 //   2. La ventana se abre DE INMEDIATO con una pantalla de carga (splash).
-//   3. Un hilo aparte arranca `dsh web` y espera a que responda.
+//   3. Un hilo aparte comprueba Node, instala DSH si falta, arranca
+//      `dsh web` y espera a que responda.
 //   4. Cuando está listo, la ventana navega a la GUI con su token.
 //   5. Al cerrar la ventana se termina el proceso hijo.
+//
+// Módulos:
+//   backend       proceso `dsh web` (puerto, arranque, parada)
+//   dsh           localizar, instalar y versionar DSH y Node
+//   actualizacion avisos de versión nueva por notificación
+//   splash        pantalla de carga y recursos de `ui/`
+//   textos        idioma del equipo y textos de `ui/textos.json`
+//   versiones     comparación semver
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::io::Write;
-use std::net::TcpListener;
-use std::process::{Child, Command, Stdio};
+mod actualizacion;
+mod backend;
+mod dsh;
+mod splash;
+mod textos;
+mod versiones;
+
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-/// Guarda el proceso hijo para poder terminarlo al cerrar la ventana.
-struct Backend(Mutex<Option<Child>>);
-
-/// Puerto preferido de la app.
-///
-/// La cookie de sesión de DSH lleva la `authority` (host:puerto) firmada.
-/// Si el puerto cambiara en cada arranque, WebKit acumularía cookies de
-/// sesiones muertas bajo el mismo host `127.0.0.1` y enviaría la incorrecta.
-/// Por eso fijamos el puerto; si estuviera ocupado, buscamos otro libre.
-const PUERTO_PREFERIDO: u16 = 3081;
-
-/// Devuelve el puerto preferido si está libre, o uno libre cualquiera.
-fn puerto_libre() -> u16 {
-    if TcpListener::bind(("127.0.0.1", PUERTO_PREFERIDO)).is_ok() {
-        return PUERTO_PREFERIDO;
-    }
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or(PUERTO_PREFERIDO)
-}
-
-/// Localiza el binario `dsh` en el PATH del usuario.
-///
-/// Una app lanzada desde el menú no hereda el PATH del shell interactivo,
-/// así que probamos las ubicaciones habituales de pnpm/npm/npx.
-fn ruta_dsh() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let candidatos = [
-        format!("{home}/.local/share/pnpm/bin/dsh"),
-        format!("{home}/.local/bin/dsh"),
-        format!("{home}/.bun/bin/dsh"),
-        "/usr/local/bin/dsh".to_string(),
-        "/usr/bin/dsh".to_string(),
-    ];
-    for c in candidatos.iter() {
-        if std::path::Path::new(c).is_file() {
-            return Some(c.clone());
-        }
-    }
-
-    // Ultimo recurso: confiar en el PATH. Si tampoco aparece, devolvemos
-    // None para que quien llame sepa que no hay nada instalado (antes se
-    // devolvia "dsh" siempre, y eso impedia detectar la ausencia).
-    let salida = Command::new("sh")
-        .arg("-c")
-        .arg("command -v dsh")
-        .env("PATH", path_ampliado())
-        .output()
-        .ok()?;
-    if salida.status.success() {
-        let ruta = String::from_utf8_lossy(&salida.stdout).trim().to_string();
-        if !ruta.is_empty() {
-            return Some(ruta);
-        }
-    }
-    None
-}
-
-/// Localiza el directorio bin del Node más moderno instalado por nvm.
-///
-/// DSH requiere Node ≥ 22 (`node:util.parseEnv`); el Node del sistema
-/// puede ser más antiguo y romper el arranque.
-fn dir_node() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let raiz = format!("{home}/.nvm/versions/node");
-    let mut versiones: Vec<String> = std::fs::read_dir(&raiz)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .collect();
-    versiones.sort_by(|a, b| {
-        let parse = |s: &str| -> Vec<u32> {
-            s.trim_start_matches('v')
-                .split('.')
-                .filter_map(|p| p.parse().ok())
-                .collect()
-        };
-        parse(b).cmp(&parse(a))
-    });
-    for v in versiones {
-        let bin = format!("{raiz}/{v}/bin");
-        if std::path::Path::new(&format!("{bin}/node")).is_file() {
-            return Some(bin);
-        }
-    }
-    None
-}
-
-/// Localiza el entrypoint real `@deepseek-ai/dsh/lib/bin.js` en el store de pnpm.
-///
-/// El store conserva directorios de instalaciones anteriores con la misma
-/// version de dsh, y `read_dir` no garantiza orden. Para no arrancar un DSH
-/// obsoleto, resolvemos primero la ruta que el shim global tiene escrita:
-/// es la unica que coincide con lo que el usuario ejecuta en su terminal.
-fn entrypoint_dsh() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-
-    // 1) La referencia del shim global es la fuente de verdad.
-    let shim = format!("{home}/.local/share/pnpm/bin/dsh");
-    if let Ok(contenido) = std::fs::read_to_string(&shim) {
-        // El shim apunta a global/v11/<hash>; tomamos el hash mas largo.
-        let mut mejor: Option<String> = None;
-        for parte in contenido.split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '/') {
-            if let Some(resto) = parte.split("global/v11/").nth(1) {
-                let hash = resto.split('/').next().unwrap_or("").to_string();
-                if hash.len() > 16 {
-                    if mejor.as_ref().map_or(true, |m| hash.len() > m.len()) {
-                        mejor = Some(hash);
-                    }
-                }
-            }
-        }
-        if let Some(hash) = mejor {
-            let candidato = format!(
-                "{home}/.local/share/pnpm/global/v11/{hash}/node_modules/@deepseek-ai/dsh/lib/bin.js"
-            );
-            if std::path::Path::new(&candidato).is_file() {
-                return Some(candidato);
-            }
-        }
-    }
-
-    // 2) Respaldo: el directorio modificado mas recientemente.
-    let raiz = format!("{home}/.local/share/pnpm/global/v11");
-    let mut candidatos: Vec<(std::time::SystemTime, String)> = Vec::new();
-    for entrada in std::fs::read_dir(&raiz).ok()?.filter_map(|e| e.ok()) {
-        let ruta = entrada.path().join("node_modules/@deepseek-ai/dsh/lib/bin.js");
-        if ruta.is_file() {
-            let t = entrada
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::UNIX_EPOCH);
-            candidatos.push((t, ruta.to_string_lossy().to_string()));
-        }
-    }
-    candidatos.sort_by(|a, b| b.0.cmp(&a.0));
-    candidatos.into_iter().next().map(|(_, r)| r)
-}
-
-/// PATH ampliado para que el proceso hijo encuentre node y dsh.
-fn path_ampliado() -> String {
-    let actual = std::env::var("PATH").unwrap_or_default();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let node = dir_node().unwrap_or_default();
-    format!("{node}:{home}/.local/share/pnpm/bin:{home}/.local/bin:{home}/.bun/bin:{actual}")
-}
-
-/// Idioma de la interfaz segun el equipo: `es`, `en` o `pt`.
-///
-/// Se leen las variables de entorno del sistema (las mismas que usa el
-/// escritorio). Espanol, ingles y portugues; cualquier otro idioma cae al
-/// espanol, que es el idioma por defecto de la aplicacion.
-fn idioma_del_equipo() -> &'static str {
-    // LC_ALL manda sobre LC_MESSAGES, y este sobre LANG.
-    for var in ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"] {
-        let valor = std::env::var(var).unwrap_or_default().to_lowercase();
-        if valor.is_empty() {
-            continue;
-        }
-        // Formatos: "es_CO.UTF-8", "en_US", "pt_BR.utf8", "es_CO:es"
-        let base = valor
-            .split(['.', ':', '@'])
-            .next()
-            .unwrap_or("")
-            .split(['_', '-'])
-            .next()
-            .unwrap_or("")
-            .to_string();
-        match base.as_str() {
-            "es" => return "es",
-            "en" => return "en",
-            "pt" => return "pt",
-            // Cualquier otro idioma: se sigue probando la variable siguiente.
-            _ => continue,
-        }
-    }
-    // Sin coincidencia, espanol por defecto.
-    "es"
-}
-
-/// Version de DSH que hay instalada, leida de su package.json.
-fn version_instalada(entrypoint: &str) -> Option<String> {
-    // <...>/node_modules/@deepseek-ai/dsh/lib/bin.js
-    //   -> subimos a la raiz del paquete y leemos package.json
-    let paquete = std::path::Path::new(entrypoint)
-        .parent()? // lib/
-        .parent()? // raiz del paquete
-        .join("package.json");
-    let texto = std::fs::read_to_string(paquete).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&texto).ok()?;
-    json.get("version")?.as_str().map(|s| s.to_string())
-}
-
-/// Version estable mas reciente publicada en npm.
-///
-/// Se consulta el registro directamente para no depender de que `npm` este en
-/// el PATH. Devuelve `None` si no hay red o el registro no responde: en ese
-/// caso la aplicacion sigue arrancando con lo que haya instalado.
-fn version_publicada() -> Option<String> {
-    let dir = "registry.npmjs.org:443";
-    let respuesta = https_get(dir, "/@deepseek-ai%2Fdsh/latest")?;
-    let json: serde_json::Value = serde_json::from_str(&respuesta).ok()?;
-    json.get("version")?.as_str().map(|s| s.to_string())
-}
-
-/// Peticion HTTPS GET minima y sin dependencias externas.
-///
-/// Solo se usa para consultar el registro de npm; si algo falla devuelve
-/// `None` y la aplicacion continua sin avisar de actualizaciones.
-fn https_get(dir: &str, ruta: &str) -> Option<String> {
-    // Resolucion DNS + conexion TLS mediante `curl`, presente en cualquier
-    // escritorio Linux. Asi no arrastramos un cliente TLS al binario.
-    let salida = Command::new("curl")
-        .args([
-            "-fsSL",
-            "--max-time",
-            "8",
-            "-H",
-            "Accept: application/json",
-            &format!("https://{dir}{ruta}"),
-        ])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-
-    if !salida.status.success() {
-        return None;
-    }
-    String::from_utf8(salida.stdout).ok()
-}
-
-/// Instala DSH globalmente si no esta presente.
-///
-/// Se ejecuta solo cuando `entrypoint_dsh()` y `ruta_dsh()` no encuentran
-/// nada: en ese caso la aplicacion no tendria backend con el que arrancar.
-/// Se usa pnpm si esta disponible (es el gestor que DSH documenta) y si no,
-/// npm. Devuelve `true` si la instalacion termino bien.
-fn instalar_dsh_si_falta() -> bool {
-    if entrypoint_dsh().is_some() || ruta_dsh().is_some() {
-        return true; // ya esta instalado
-    }
-    // Basta con que el entrypoint aparezca: es la comprobacion que realmente
-    // importa, no el codigo de salida del gestor.
-    ejecutar_instalacion(|| entrypoint_dsh().is_some())
-}
-
-/// Ejecuta `pnpm add -g @deepseek-ai/dsh` (con npm como respaldo) hasta que
-/// `listo()` confirme el resultado. Sirve para instalar y para actualizar:
-/// sin version explicita, el gestor instala la etiqueta `latest`.
-fn ejecutar_instalacion(listo: impl Fn() -> bool) -> bool {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = path_ampliado();
-
-    // pnpm y npm son scripts de Node, asi que necesitan encontrar `node` en
-    // el PATH: se lo pasamos ampliado. Preferimos pnpm (el gestor que DSH
-    // documenta) y dejamos npm como respaldo.
-    let ordenes = [
-        format!("{home}/.local/share/pnpm/bin/pnpm add -g @deepseek-ai/dsh"),
-        format!("{home}/.local/share/pnpm/bin/pnpm add -g @deepseek-ai/dsh --force"),
-        "npm install -g @deepseek-ai/dsh".to_string(),
-    ];
-
-    for orden in ordenes {
-        let salida = Command::new("sh")
-            .arg("-c")
-            .arg(&orden)
-            .env("PATH", &path)
-            .stdin(Stdio::null())
-            .output();
-
-        if salida.map(|o| o.status.success()).unwrap_or(false) && listo() {
-            return true;
-        }
-    }
-    false
-}
-
-/// Textos de las notificaciones de actualizacion, en el idioma del equipo.
-fn texto_aviso(clave: &str, instalada: &str, publicada: &str) -> String {
-    const ORDEN: &str = "pnpm add -g @deepseek-ai/dsh";
-    match (idioma_del_equipo(), clave) {
-        ("en", "titulo") => "DeepSeek Harness update available".into(),
-        ("en", "cuerpo") => format!("Installed: {instalada}\nNew: {publicada}"),
-        ("en", "manual") => format!("Installed: {instalada}\nNew: {publicada}\nUpdate with: {ORDEN}"),
-        ("en", "boton") => "Update".into(),
-        ("en", "actualizando") => format!("Updating DeepSeek Harness to {publicada}…"),
-        ("en", "listo") => format!("Updated to {publicada}. Restart the app to use it."),
-        ("en", "fallo") => format!("Could not update. Run it manually: {ORDEN}"),
-
-        ("pt", "titulo") => "Atualização do DeepSeek Harness disponível".into(),
-        ("pt", "cuerpo") => format!("Instalada: {instalada}\nNova: {publicada}"),
-        ("pt", "manual") => format!("Instalada: {instalada}\nNova: {publicada}\nAtualize com: {ORDEN}"),
-        ("pt", "boton") => "Atualizar".into(),
-        ("pt", "actualizando") => format!("Atualizando o DeepSeek Harness para {publicada}…"),
-        ("pt", "listo") => format!("Atualizado para {publicada}. Reinicie o aplicativo para usá-la."),
-        ("pt", "fallo") => format!("Não foi possível atualizar. Execute manualmente: {ORDEN}"),
-
-        (_, "titulo") => "Hay una actualización de DeepSeek Harness".into(),
-        (_, "cuerpo") => format!("Instalada: {instalada}\nNueva: {publicada}"),
-        (_, "manual") => format!("Instalada: {instalada}\nNueva: {publicada}\nActualiza con: {ORDEN}"),
-        (_, "boton") => "Actualizar".into(),
-        (_, "actualizando") => format!("Actualizando DeepSeek Harness a {publicada}…"),
-        (_, "listo") => format!("Actualizado a {publicada}. Reinicia la aplicación para usarla."),
-        (_, _) => format!("No se pudo actualizar. Hazlo a mano: {ORDEN}"),
-    }
-}
-
-/// Muestra una notificacion de escritorio con `notify-send`.
-///
-/// Con `boton`, la notificacion lleva una accion y la llamada BLOQUEA hasta
-/// que el usuario la pulsa o la descarta; devuelve `true` si la pulso. Si el
-/// `notify-send` del sistema (o el servidor de notificaciones) no admite
-/// acciones, se muestra `cuerpo_sin_boton` como aviso simple. Si no hay
-/// `notify-send`, no pasa nada: la app sigue funcionando igual.
-fn notificar(titulo: &str, cuerpo: &str, boton: Option<&str>, cuerpo_sin_boton: &str) -> bool {
-    let base = ["--app-name=DeepSeek Harness", "--icon=dsh"];
-
-    if let Some(boton) = boton {
-        let accion = format!("--action=actualizar={boton}");
-        let salida = Command::new("notify-send")
-            .args(base)
-            .arg(&accion)
-            .args([titulo, cuerpo])
-            .stdin(Stdio::null())
-            .output();
-        if let Ok(o) = salida {
-            if o.status.success() {
-                // notify-send imprime el nombre de la accion pulsada.
-                return String::from_utf8_lossy(&o.stdout).trim() == "actualizar";
-            }
-        }
-        // Sin soporte de acciones: caemos al aviso simple.
-    }
-
-    let _ = Command::new("notify-send")
-        .args(base)
-        .args([titulo, cuerpo_sin_boton])
-        .stdin(Stdio::null())
-        .output();
-    false
-}
-
-/// Avisa si hay una version mas nueva de DSH.
-///
-/// El aviso principal es una notificacion de escritorio: la pantalla de carga
-/// desaparece en cuanto arranca el servidor, asi que un aviso solo ahi se
-/// perdia. La notificacion lleva un boton «Actualizar»; la app solo instala
-/// si el usuario lo pulsa, nunca en segundo plano sin permiso.
-fn avisar_de_actualizacion(ventana: &tauri::WebviewWindow, entrypoint: &str) {
-    let instalada = match version_instalada(entrypoint) {
-        Some(v) => v,
-        None => return,
-    };
-    let publicada = match version_publicada() {
-        Some(v) => v,
-        None => return, // sin red: no molestamos
-    };
-    if publicada == instalada {
-        return;
-    }
-
-    // Solo avisamos si la publicada es realmente mas nueva (comparacion
-    // numerica por componentes, sin tener en cuenta pre-releases).
-    if !es_mas_nueva(&publicada, &instalada) {
-        return;
-    }
-
-    let aviso = format!(
-        "window.dshAviso && window.dshAviso('avisoVersion', '{publicada}');"
-    );
-    // Tambien en la pantalla de carga, por si todavia esta visible.
-    let _ = ventana.eval(&aviso);
-
-    let t = |clave| texto_aviso(clave, &instalada, &publicada);
-    let pulso = notificar(&t("titulo"), &t("cuerpo"), Some(&t("boton")), &t("manual"));
-    if !pulso {
-        return;
-    }
-
-    notificar(&t("titulo"), &t("actualizando"), None, &t("actualizando"));
-    // Lista cuando el entrypoint (resuelto de nuevo, pues pnpm lo mueve)
-    // ya no es mas viejo que la version publicada.
-    let ok = ejecutar_instalacion(|| {
-        entrypoint_dsh()
-            .and_then(|e| version_instalada(&e))
-            .map(|v| !es_mas_nueva(&publicada, &v))
-            .unwrap_or(false)
-    });
-    let clave = if ok { "listo" } else { "fallo" };
-    notificar(&t("titulo"), &t(clave), None, &t(clave));
-}
-
-/// Compara versiones tipo `1.2.3` o `0.2.0-rc.2` por componentes numericos.
-fn es_mas_nueva(candidata: &str, actual: &str) -> bool {
-    let nums = |v: &str| -> Vec<u32> {
-        v.split(['.', '-'])
-            .take(3)
-            .map(|p| p.parse::<u32>().unwrap_or(0))
-            .collect()
-    };
-    let (a, b) = (nums(candidata), nums(actual));
-    a > b
-}
-
-/// Sirve la pantalla de carga en `127.0.0.1`, en su propio puerto.
-///
-/// Devuelve el puerto. El HTML queda embebido en el binario para que la
-/// ventana pueda nacer ya en `127.0.0.1` (mismo sitio que la GUI) y la
-/// cookie `SameSite=Strict` no se bloquee al navegar despues.
-fn servidor_splash() -> u16 {
-    let listener = match TcpListener::bind("127.0.0.1:0") {
-        Ok(l) => l,
-        Err(_) => return 0,
-    };
-    let puerto = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-
-    std::thread::spawn(move || {
-        for flujo in listener.incoming() {
-            let mut s = match flujo {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            // Leemos la peticion para saber que recurso se pide.
-            // Solo UNA lectura: si se leyera dos veces, la primera consumiria
-            // la peticion y la segunda devolveria 0 bytes, de modo que
-            // siempre se serviria el HTML y nunca el logotipo.
-            let mut buf = [0u8; 2048];
-            let n = std::io::Read::read(&mut s, &mut buf).unwrap_or(0);
-            let peticion = String::from_utf8_lossy(&buf[..n]).to_string();
-
-            // El logotipo se sirve como archivo aparte, no incrustado en el
-            // HTML: un base64 grande obliga al navegador a decodificarlo
-            // antes de pintar y dejaba un hueco visible sin el logo.
-            let (tipo, cuerpo): (&str, Vec<u8>) = if peticion.contains("logo-splash.png") {
-                ("image/png", cargar_logo())
-            } else {
-                ("text/html; charset=utf-8", cargar_splash().into_bytes())
-            };
-
-            let cabecera = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {tipo}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-                cuerpo.len()
-            );
-            let _ = std::io::Write::write_all(&mut s, cabecera.as_bytes());
-            let _ = std::io::Write::write_all(&mut s, &cuerpo);
-            let _ = s.flush();
-        }
-    });
-
-    puerto
-}
-
-/// Candidatos donde puede estar un recurso de `ui/` (splash, logotipo...).
-///
-/// Se cubren tres escenarios: ejecucion desde `target/release`, instalacion
-/// en `~/.local/share` y paquete `.deb` en `/usr/share`.
-fn rutas_ui(nombre: &str) -> Vec<std::path::PathBuf> {
-    let mut rutas: Vec<std::path::PathBuf> = Vec::new();
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            // Desde target/release hay que subir tres niveles hasta la raiz
-            // del proyecto; se prueban varias profundidades para tolerar
-            // tambien una instalacion junto al binario.
-            rutas.push(dir.join(nombre));
-            rutas.push(dir.join(format!("ui/{nombre}")));
-            rutas.push(dir.join(format!("../ui/{nombre}")));
-            rutas.push(dir.join(format!("../../ui/{nombre}")));
-            rutas.push(dir.join(format!("../../../ui/{nombre}")));
-        }
-    }
-
-    let home = std::env::var("HOME").unwrap_or_default();
-    rutas.push(std::path::PathBuf::from(format!(
-        "{home}/.local/share/dsh-desktop/ui/{nombre}"
-    )));
-    rutas.push(std::path::PathBuf::from(format!(
-        "/usr/share/dsh-desktop/ui/{nombre}"
-    )));
-    rutas.push(std::path::PathBuf::from(format!(
-        "/usr/local/share/dsh-desktop/ui/{nombre}"
-    )));
-
-    rutas
-}
-
-/// Carga la pantalla de carga desde `ui/splash.html`.
-///
-/// Se lee en tiempo de ejecucion (no incrustada) para poder ajustar el diseno
-/// sin recompilar el binario de Rust.
-fn cargar_splash() -> String {
-    for r in rutas_ui("splash.html") {
-        if let Ok(t) = std::fs::read_to_string(&r) {
-            return t;
-        }
-    }
-    // Ultimo recurso: pagina minima si falta el archivo.
-    "<!DOCTYPE html><html><body style=\"margin:0;background:#0d0f12;color:#e6e8eb;\n     display:grid;place-items:center;height:100vh;font:15px system-ui\">\n     <p>Cargando DeepSeek Harness...</p></body></html>".to_string()
-}
-
-/// Carga el logotipo de la pantalla de carga como bytes PNG.
-///
-/// Se sirve como recurso aparte en lugar de incrustarlo en el HTML: un base64
-/// grande obliga al navegador a decodificarlo antes de pintar, y ese hueco se
-/// veia como un destello claro sin el logo.
-fn cargar_logo() -> Vec<u8> {
-    for r in rutas_ui("logo-splash.png") {
-        if let Ok(b) = std::fs::read(&r) {
-            return b;
-        }
-    }
-    Vec::new()
-}
-
-/// Espera a que algo acepte conexiones TCP en el puerto dado.
-fn esperar_servidor(puerto: u16, limite: Duration) -> bool {
-    let inicio = Instant::now();
-    let dir = format!("127.0.0.1:{puerto}");
-    while inicio.elapsed() < limite {
-        if std::net::TcpStream::connect(&dir).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(120));
-    }
-    false
-}
-
-/// Arranca `dsh web`, espera la URL con token y devuelve (hijo, url).
-fn arrancar_backend(puerto: u16) -> (Option<Child>, Option<String>) {
-    let args_app = [
-        "web",
-        "--no-open",
-        "--port",
-        &puerto.to_string(),
-        "--host",
-        "127.0.0.1",
-    ];
-
-    let mut env_extra: Vec<(String, String)> = Vec::new();
-    let mut cmd = match (dir_node(), entrypoint_dsh()) {
-        (Some(nodedir), Some(entry)) => {
-            let mut c = Command::new(format!("{nodedir}/node"));
-            c.arg(&entry);
-            if let Some(base) = std::path::Path::new(&entry)
-                .parent()
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent())
-            {
-                env_extra.push(("NODE_PATH".into(), base.to_string_lossy().to_string()));
-            }
-            c
-        }
-        _ => match ruta_dsh() {
-            Some(b) => Command::new(b),
-            None => Command::new("dsh"),
-        },
-    };
-
-    let mut hijo = cmd
-        .args(args_app)
-        .envs(env_extra)
-        .env("PATH", path_ampliado())
-        .env("DSH_HOME", {
-            let h = std::env::var("HOME").unwrap_or_default();
-            format!("{h}/.dsh")
-        })
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok();
-
-    // La URL se lee en un hilo aparte porque `dsh web` la imprime DESPUÉS
-    // de levantar el servidor. Si la leyéramos de forma secuencial nos
-    // bloquearíamos y perderíamos el token.
-    let stdout = hijo.as_mut().and_then(|c| c.stdout.take());
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    if let Some(mut out) = stdout {
-        std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader};
-            let mut reader = BufReader::new(&mut out);
-            let mut linea = String::new();
-            for _ in 0..20 {
-                linea.clear();
-                match reader.read_line(&mut linea) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        if let Some(pos) = linea.find("http://") {
-                            let _ = tx.send(linea[pos..].trim().to_string());
-                            return;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-    }
-
-    // Esperamos a que el puerto acepte conexiones…
-    let listo = esperar_servidor(puerto, Duration::from_secs(90));
-
-    // …y damos un margen corto para recibir la URL con su token.
-    let url_con_token = rx.recv_timeout(Duration::from_secs(10)).ok();
-
-    let url = if listo {
-        Some(url_con_token.unwrap_or_else(|| format!("http://127.0.0.1:{puerto}")))
-    } else {
-        None
-    };
-
-    (hijo, url)
-}
+use actualizacion::vigilar_actualizaciones;
+use backend::{arrancar_backend, parar_backend, puerto_libre, Backend};
+use dsh::{entrypoint_dsh, instalar_dsh_si_falta, node_suficiente, ruta_dsh, version_node};
+use splash::servidor_splash;
+use textos::idioma_del_equipo;
 
 fn main() {
     // WebKitGTK falla al crear el display EGL con el driver propietario de
@@ -671,13 +75,41 @@ fn main() {
             .title("DeepSeek Harness")
             .inner_size(1280.0, 860.0)
             .min_inner_size(900.0, 600.0)
+            // Fondo oscuro del webview: al navegar del splash a la GUI,
+            // WebKit pinta este color mientras carga el documento nuevo. Con
+            // el blanco por defecto se veia un destello de ~1 s entre dos
+            // pantallas oscuras. Es un tono intermedio entre ambas.
+            .background_color(tauri::window::Color(21, 22, 25, 255))
             .center()
             .build()?;
 
             // 2) El backend arranca en un hilo aparte, sin bloquear la UI.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                // 2a) Si DSH no esta instalado, se instala ahora. Hasta aqui
+                let error_en_splash = |js: String| {
+                    if let Some(w) = handle.get_webview_window("main") {
+                        let _ = w.eval(&js);
+                    }
+                };
+
+                // 2a) Sin un Node suficiente ni se puede instalar DSH ni
+                //     arrancarlo: se explica en la pantalla de carga en lugar
+                //     de esperar 90 s a un servidor que nunca respondera.
+                match version_node() {
+                    Some(v) if node_suficiente(&v) => {}
+                    Some(v) => {
+                        return error_en_splash(format!(
+                            "window.dshError && window.dshError('errorNode', {{node: '{v}'}});"
+                        ));
+                    }
+                    None => {
+                        return error_en_splash(
+                            "window.dshError && window.dshError('errorSinNode');".into(),
+                        );
+                    }
+                }
+
+                // 2b) Si DSH no esta instalado, se instala ahora. Hasta aqui
                 //     la ventana ya esta visible con la pantalla de carga, asi
                 //     que la espera no se percibe como un cuelgue.
                 let esta = entrypoint_dsh().is_some() || ruta_dsh().is_some();
@@ -697,13 +129,11 @@ fn main() {
                     }
                 }
 
-                // 2b) Con DSH presente, avisamos si hay una version mas nueva.
-                //     Va en su propio hilo para no retrasar el arranque.
-                if let (Some(w), Some(entry)) =
-                    (handle.get_webview_window("main"), entrypoint_dsh())
-                {
-                    std::thread::spawn(move || avisar_de_actualizacion(&w, &entry));
-                }
+                // 2c) Con DSH presente, avisamos si hay una version mas nueva,
+                //     ahora y cada pocas horas. Va en su propio hilo para no
+                //     retrasar el arranque.
+                let h = handle.clone();
+                std::thread::spawn(move || vigilar_actualizaciones(h));
 
                 let (hijo, url) = arrancar_backend(puerto);
 
@@ -745,14 +175,7 @@ fn main() {
         })
         .on_window_event(|ventana, evento| {
             if let tauri::WindowEvent::Destroyed = evento {
-                if let Some(estado) = ventana.try_state::<Backend>() {
-                    if let Ok(mut guard) = estado.0.lock() {
-                        if let Some(mut c) = guard.take() {
-                            let _ = c.kill();
-                            let _ = c.wait();
-                        }
-                    }
-                }
+                parar_backend(ventana);
             }
         })
         .run(tauri::generate_context!())
